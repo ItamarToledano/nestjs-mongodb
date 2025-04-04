@@ -1,0 +1,36 @@
+{
+  "name": "@nest-js/mongodb",
+  "version": "1.0.0",
+  "description": "A TypeScript MongoDB utility package designed for NestJS applications with full MongoDB CRUD operations and metadata injection.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "nestjs",
+    "mongodb",
+    "typescript",
+    "crud",
+    "database"
+  ],
+  "author": "Your Name <your.email@example.com>",
+  "license": "MIT",
+  "dependencies": {
+    "mongodb": "^5.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "typescript": "^4.5.0",
+    "@types/jest": "^29.0.0",
+    "mongodb-memory-server": "^7.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ItamarToledano/nestjs-mongodb.git"
+  },
+  "homepage": "https://github.com/ItamarToledano/nestjs-mongodb#readme"
+}
