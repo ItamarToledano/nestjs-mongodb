@@ -1,155 +1,217 @@
 import {
   Collection,
   Document,
-  InsertOneOptions,
-  InsertOneResult,
-  InsertManyResult,
-  UpdateResult,
-  DeleteResult,
-  BulkWriteResult,
   Filter,
-  UpdateFilter,
-  OptionalId,
-  WithId,
-  BulkWriteOptions,
-  ReplaceOptions,
-  DeleteOptions,
-  FindOptions,
-  CountDocumentsOptions,
-  AggregateOptions,
-  DistinctOptions,
+  InsertOneOptions,
   UpdateOptions,
-  AnyBulkWriteOperation,
+  ReplaceOptions,
+  UpdateFilter,
+  OptionalUnlessRequiredId,
+  ClientSession,
+  WithId,
+  MongoClient,
+  InsertManyResult,
 } from "mongodb";
 
-type MetaDataFunction = () => Record<string, any>;
-
-interface BaseOptions {
-  createMetaData?: MetaDataFunction;
+export interface DbOperationOptions<T> {
+  createMetaData?: () => Partial<T>;
+  updateMetaData?: () => Partial<T>;
+  session?: ClientSession;
+  debug?: boolean;
+  includeDeleted?: boolean;
 }
 
-export class DbOperationsService {
-  constructor(private collection: Collection<Document>) {}
+export class DbOperationsService<T extends Document = Document> {
+  private readonly collection: Collection<T>;
+  private readonly client: MongoClient;
+  private debug = false;
 
-  private applyMetaData(
-    document: Document,
-    metaDataFn?: MetaDataFunction
-  ): Document {
-    return metaDataFn ? { ...document, ...metaDataFn() } : document;
+  constructor(
+    collection: Collection<T>,
+    client: MongoClient,
+    options?: { debug?: boolean }
+  ) {
+    this.collection = collection;
+    this.client = client;
+    this.debug = options?.debug ?? false;
+  }
+
+  enableDebug(enable = true) {
+    this.debug = enable;
+  }
+
+  private log(...args: any[]) {
+    if (this.debug) console.log("[DbService]", ...args);
+  }
+
+  private filterDeleted(
+    filter: Filter<T>,
+    includeDeleted?: boolean
+  ): Filter<T> {
+    return includeDeleted
+      ? filter
+      : ({ $and: [filter, { deletedAt: { $exists: false } }] } as Filter<T>);
   }
 
   async insertOne(
-    document: OptionalId<Document>,
-    options: InsertOneOptions & BaseOptions = {}
-  ): Promise<InsertOneResult<Document>> {
-    const docWithMeta = this.applyMetaData(document, options.createMetaData);
-    return this.collection.insertOne(docWithMeta, options);
+    doc: OptionalUnlessRequiredId<T>,
+    options: DbOperationOptions<T> = {}
+  ) {
+    const finalDoc = {
+      ...doc,
+      ...(options.createMetaData?.() ?? {}),
+    };
+
+    this.log("insertOne:", finalDoc);
+    const result = await this.collection.insertOne(finalDoc, {
+      session: options.session,
+    } as InsertOneOptions);
+    return result;
   }
 
-  async insertMany(
-    documents: OptionalId<Document>[],
-    options: BulkWriteOptions & BaseOptions = {}
-  ): Promise<InsertManyResult<Document>> {
-    const docsWithMeta = options.createMetaData
-      ? documents.map((doc) => this.applyMetaData(doc, options.createMetaData))
-      : documents;
-    return this.collection.insertMany(docsWithMeta, options);
-  }
+  // async insertMany(
+  //   docs: OptionalUnlessRequiredId<T>[],
+  //   options: DbOperationOptions<T> = {}
+  // ) {
+  //   const finalDocs = docs.map((doc) => ({
+  //     ...doc,
+  //     ...(options.createMetaData?.() ?? {}),
+  //   }));
+
+  //   this.log("insertMany:", finalDocs);
+  //   return this.collection.insertMany(finalDocs, {
+  //     session: options.session,
+  //   } as InsertManyResult<T>);
+  // }
 
   async findOne(
-    filter: Filter<Document>,
-    options: FindOptions = {}
-  ): Promise<WithId<Document> | null> {
-    return this.collection.findOne(filter, options);
+    filter: Filter<T>,
+    options: DbOperationOptions<T> = {}
+  ): Promise<WithId<T> | null> {
+    const f = this.filterDeleted(filter, options.includeDeleted);
+    this.log("findOne:", f);
+    return this.collection.findOne(f, { session: options.session });
   }
 
-  async findMany(
-    filter: Filter<Document> = {},
-    options: FindOptions = {}
-  ): Promise<WithId<Document>[]> {
-    return this.collection.find(filter, options).toArray();
+  async findById(
+    id: string,
+    options: DbOperationOptions<T> = {}
+  ): Promise<WithId<T> | null> {
+    return this.findOne({ _id: id } as Filter<T>, options);
+  }
+
+  async patchOne(
+    filter: Filter<T>,
+    update: UpdateFilter<T>,
+    options: DbOperationOptions<T> = {}
+  ) {
+    const f = this.filterDeleted(filter, options.includeDeleted);
+    const meta = options.updateMetaData?.();
+    const updateDoc = meta
+      ? { ...update, $set: { ...(update as any).$set, ...meta } }
+      : update;
+
+    this.log("patchOne:", f, updateDoc);
+    return this.collection.updateOne(f, updateDoc, {
+      session: options.session,
+    } as UpdateOptions);
+  }
+
+  async patchById(
+    id: string,
+    update: UpdateFilter<T>,
+    options: DbOperationOptions<T> = {}
+  ) {
+    return this.patchOne({ _id: id } as Filter<T>, update, options);
   }
 
   async updateOne(
-    filter: Filter<Document>,
-    update: UpdateFilter<Document>,
-    options: UpdateOptions & BaseOptions = {}
-  ): Promise<UpdateResult> {
-    const updateWithMeta = options.createMetaData
-      ? {
-          ...update,
-          $set: { ...(update as any).$set, ...options.createMetaData() },
-        }
+    filter: Filter<T>,
+    update: UpdateFilter<T>,
+    options: DbOperationOptions<T> = {}
+  ) {
+    const f = this.filterDeleted(filter, options.includeDeleted);
+    const meta = options.updateMetaData?.();
+    const updateDoc = meta
+      ? { ...update, $set: { ...(update as any).$set, ...meta } }
       : update;
-    return this.collection.updateOne(filter, updateWithMeta, options);
+
+    this.log("updateOne:", f, updateDoc);
+    return this.collection.updateOne(f, updateDoc, {
+      session: options.session,
+    } as UpdateOptions);
   }
 
   async updateMany(
-    filter: Filter<Document>,
-    update: UpdateFilter<Document>,
-    options: UpdateOptions & BaseOptions = {}
-  ): Promise<UpdateResult> {
-    const updateWithMeta = options.createMetaData
-      ? {
-          ...update,
-          $set: { ...(update as any).$set, ...options.createMetaData() },
-        }
+    filter: Filter<T>,
+    update: UpdateFilter<T>,
+    options: DbOperationOptions<T> = {}
+  ) {
+    const f = this.filterDeleted(filter, options.includeDeleted);
+    const meta = options.updateMetaData?.();
+    const updateDoc = meta
+      ? { ...update, $set: { ...(update as any).$set, ...meta } }
       : update;
-    return this.collection.updateMany(filter, updateWithMeta, options);
+
+    this.log("updateMany:", f, updateDoc);
+    return this.collection.updateMany(f, updateDoc, {
+      session: options.session,
+    } as UpdateOptions);
   }
 
   async replaceOne(
-    filter: Filter<Document>,
-    replacement: Document,
-    options: ReplaceOptions & BaseOptions = {}
-  ): Promise<Document | UpdateResult> {
-    const replacementWithMeta = this.applyMetaData(
-      replacement,
-      options.createMetaData
-    );
-    return this.collection.replaceOne(filter, replacementWithMeta, options);
+    filter: Filter<T>,
+    replacement: T,
+    options: DbOperationOptions<T> = {}
+  ) {
+    const f = this.filterDeleted(filter, options.includeDeleted);
+    this.log("replaceOne:", f, replacement);
+    return this.collection.replaceOne(f, replacement, {
+      session: options.session,
+    } as ReplaceOptions);
   }
 
-  async deleteOne(
-    filter: Filter<Document>,
-    options: DeleteOptions = {}
-  ): Promise<DeleteResult> {
-    return this.collection.deleteOne(filter, options);
+  async deleteOne(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
+    const f = this.filterDeleted(filter, options.includeDeleted);
+    this.log("deleteOne:", f);
+    return this.collection.deleteOne(f, {
+      session: options.session,
+    });
   }
 
-  async deleteMany(
-    filter: Filter<Document>,
-    options: DeleteOptions = {}
-  ): Promise<DeleteResult> {
-    return this.collection.deleteMany(filter, options);
+  async deleteMany(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
+    const f = this.filterDeleted(filter, options.includeDeleted);
+    this.log("deleteMany:", f);
+    return this.collection.deleteMany(f, {
+      session: options.session,
+    });
   }
 
-  async aggregate(
-    pipeline: Document[],
-    options: AggregateOptions = {}
-  ): Promise<Document[]> {
-    return this.collection.aggregate(pipeline, options).toArray();
+  // async softDeleteOne(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
+  //   const updateDoc: UpdateFilter<T> = {$set: { deletedAt: new Date() }};
+
+  //   return this.updateOne(filter, updateDoc as UpdateFilter<T>, options);
+  // }
+
+  // async softDeleteMany(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
+  //   const updateDoc: UpdateFilter<T> = { $set: { deletedAt: new Date() } };
+
+  //   return this.updateMany(filter, updateDoc as UpdateFilter<T>, options);
+  // }
+
+  async startTransaction(): Promise<ClientSession> {
+    const session = this.client.startSession();
+    session.startTransaction();
+    return session;
   }
 
-  async countDocuments(
-    filter: Filter<Document> = {},
-    options: CountDocumentsOptions = {}
-  ): Promise<number> {
-    return this.collection.countDocuments(filter, options);
+  async commitTransaction(session: ClientSession) {
+    await session.commitTransaction();
+    session.endSession();
   }
 
-  async distinct(
-    field: string,
-    filter: Filter<Document> = {},
-    options: DistinctOptions = {}
-  ): Promise<any[]> {
-    return this.collection.distinct(field, filter, options);
-  }
-
-  async bulkWrite(
-    operations: AnyBulkWriteOperation[],
-    options: BulkWriteOptions = {}
-  ): Promise<BulkWriteResult> {
-    return this.collection.bulkWrite(operations, options);
+  async abortTransaction(session: ClientSession) {
+    await session.abortTransaction();
+    session.endSession();
   }
 }
