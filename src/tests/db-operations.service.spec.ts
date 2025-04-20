@@ -160,4 +160,39 @@ describe("DbOperationsService", () => {
 
     await session.endSession();
   });
+
+  it("fails to insert a document with missing required fields", async () => {
+    const badDoc = { age: 45 } as any;
+
+    await expect(service.insertOne(badDoc)).resolves.toHaveProperty(
+      "acknowledged",
+      true
+    );
+
+    const found = await collection.findOne({ age: 45 });
+    expect(found).toBeTruthy();
+  });
+
+  it("throws on update with invalid filter", async () => {
+    await expect(
+      service.updateOne(null as any, { $set: { age: 99 } })
+    ).rejects.toThrow();
+  });
+
+  it("throws on replace with empty replacement", async () => {
+    await collection.insertOne({ name: "Olive", age: 30 });
+    const replaced = await service.replaceOne({ name: "Olive" }, {} as any);
+    await expect(replaced).toBeNull();
+  });
+
+  it("returns null for findById with non-existent id", async () => {
+    const nonExistentId = "60c72b2f9b1d4c3a4c8f9e4d";
+    const doc = await service.findById(nonExistentId);
+    expect(doc).toBeNull();
+  });
+
+  it("soft deletes nothing if filter does not match", async () => {
+    const res = await service.softDeleteOne({ name: "DoesNotExist" });
+    expect(res.matchedCount).toBe(0);
+  });
 });

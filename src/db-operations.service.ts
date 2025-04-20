@@ -158,6 +158,9 @@ export class DbOperationsService<T extends Document = Document> {
     options: DbOperationOptions<T> = {}
   ) {
     this.log("replaceOne:", filter, replacement);
+
+    if (!Object.keys(replacement).length) return null;
+
     return await this.collection.replaceOne(filter, replacement, {
       session: options.session,
     } as ReplaceOptions);
