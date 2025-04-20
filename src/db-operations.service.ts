@@ -10,7 +10,11 @@ import {
   ClientSession,
   WithId,
   MongoClient,
-  InsertManyResult,
+  BulkWriteOptions,
+  ObjectId,
+  EndSessionOptions,
+  TransactionOptions,
+  ClientSessionOptions,
 } from "mongodb";
 
 export interface DbOperationOptions<T> {
@@ -18,7 +22,6 @@ export interface DbOperationOptions<T> {
   updateMetaData?: () => Partial<T>;
   session?: ClientSession;
   debug?: boolean;
-  includeDeleted?: boolean;
 }
 
 export class DbOperationsService<T extends Document = Document> {
@@ -44,15 +47,6 @@ export class DbOperationsService<T extends Document = Document> {
     if (this.debug) console.log("[DbService]", ...args);
   }
 
-  private filterDeleted(
-    filter: Filter<T>,
-    includeDeleted?: boolean
-  ): Filter<T> {
-    return includeDeleted
-      ? filter
-      : ({ $and: [filter, { deletedAt: { $exists: false } }] } as Filter<T>);
-  }
-
   async insertOne(
     doc: OptionalUnlessRequiredId<T>,
     options: DbOperationOptions<T> = {}
@@ -63,41 +57,43 @@ export class DbOperationsService<T extends Document = Document> {
     };
 
     this.log("insertOne:", finalDoc);
-    const result = await this.collection.insertOne(finalDoc, {
+    return await this.collection.insertOne(finalDoc, {
       session: options.session,
     } as InsertOneOptions);
-    return result;
   }
 
-  // async insertMany(
-  //   docs: OptionalUnlessRequiredId<T>[],
-  //   options: DbOperationOptions<T> = {}
-  // ) {
-  //   const finalDocs = docs.map((doc) => ({
-  //     ...doc,
-  //     ...(options.createMetaData?.() ?? {}),
-  //   }));
+  async insertMany(
+    docs: OptionalUnlessRequiredId<T>[],
+    options: DbOperationOptions<T> = {}
+  ) {
+    const finalDocs = docs.map((doc) => ({
+      ...doc,
+      ...(options.createMetaData?.() ?? {}),
+    }));
 
-  //   this.log("insertMany:", finalDocs);
-  //   return this.collection.insertMany(finalDocs, {
-  //     session: options.session,
-  //   } as InsertManyResult<T>);
-  // }
+    return await this.collection.insertMany(finalDocs, {
+      session: options.session,
+    } as BulkWriteOptions);
+  }
+
+  async find(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
+    this.log("find:", filter);
+    return this.collection.find(filter, { session: options.session });
+  }
 
   async findOne(
     filter: Filter<T>,
     options: DbOperationOptions<T> = {}
   ): Promise<WithId<T> | null> {
-    const f = this.filterDeleted(filter, options.includeDeleted);
-    this.log("findOne:", f);
-    return this.collection.findOne(f, { session: options.session });
+    this.log("findOne:", filter);
+    return await this.collection.findOne(filter, { session: options.session });
   }
 
   async findById(
     id: string,
     options: DbOperationOptions<T> = {}
   ): Promise<WithId<T> | null> {
-    return this.findOne({ _id: id } as Filter<T>, options);
+    return await this.findOne({ _id: new ObjectId(id) } as Filter<T>, options);
   }
 
   async patchOne(
@@ -105,14 +101,13 @@ export class DbOperationsService<T extends Document = Document> {
     update: UpdateFilter<T>,
     options: DbOperationOptions<T> = {}
   ) {
-    const f = this.filterDeleted(filter, options.includeDeleted);
     const meta = options.updateMetaData?.();
     const updateDoc = meta
       ? { ...update, $set: { ...(update as any).$set, ...meta } }
       : update;
 
-    this.log("patchOne:", f, updateDoc);
-    return this.collection.updateOne(f, updateDoc, {
+    this.log("patchOne:", filter, updateDoc);
+    return await this.collection.updateOne(filter, updateDoc, {
       session: options.session,
     } as UpdateOptions);
   }
@@ -122,7 +117,7 @@ export class DbOperationsService<T extends Document = Document> {
     update: UpdateFilter<T>,
     options: DbOperationOptions<T> = {}
   ) {
-    return this.patchOne({ _id: id } as Filter<T>, update, options);
+    return await this.patchOne({ _id: id } as Filter<T>, update, options);
   }
 
   async updateOne(
@@ -130,14 +125,13 @@ export class DbOperationsService<T extends Document = Document> {
     update: UpdateFilter<T>,
     options: DbOperationOptions<T> = {}
   ) {
-    const f = this.filterDeleted(filter, options.includeDeleted);
     const meta = options.updateMetaData?.();
     const updateDoc = meta
       ? { ...update, $set: { ...(update as any).$set, ...meta } }
       : update;
 
-    this.log("updateOne:", f, updateDoc);
-    return this.collection.updateOne(f, updateDoc, {
+    this.log("updateOne:", filter, updateDoc);
+    return await this.collection.updateOne(filter, updateDoc, {
       session: options.session,
     } as UpdateOptions);
   }
@@ -147,14 +141,13 @@ export class DbOperationsService<T extends Document = Document> {
     update: UpdateFilter<T>,
     options: DbOperationOptions<T> = {}
   ) {
-    const f = this.filterDeleted(filter, options.includeDeleted);
     const meta = options.updateMetaData?.();
     const updateDoc = meta
       ? { ...update, $set: { ...(update as any).$set, ...meta } }
       : update;
 
-    this.log("updateMany:", f, updateDoc);
-    return this.collection.updateMany(f, updateDoc, {
+    this.log("updateMany:", filter, updateDoc);
+    return await this.collection.updateMany(filter, updateDoc, {
       session: options.session,
     } as UpdateOptions);
   }
@@ -164,54 +157,66 @@ export class DbOperationsService<T extends Document = Document> {
     replacement: T,
     options: DbOperationOptions<T> = {}
   ) {
-    const f = this.filterDeleted(filter, options.includeDeleted);
-    this.log("replaceOne:", f, replacement);
-    return this.collection.replaceOne(f, replacement, {
+    this.log("replaceOne:", filter, replacement);
+    return await this.collection.replaceOne(filter, replacement, {
       session: options.session,
     } as ReplaceOptions);
   }
 
   async deleteOne(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
-    const f = this.filterDeleted(filter, options.includeDeleted);
-    this.log("deleteOne:", f);
-    return this.collection.deleteOne(f, {
+    this.log("deleteOne:", filter);
+    return await this.collection.deleteOne(filter, {
       session: options.session,
     });
   }
 
   async deleteMany(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
-    const f = this.filterDeleted(filter, options.includeDeleted);
-    this.log("deleteMany:", f);
-    return this.collection.deleteMany(f, {
+    this.log("deleteMany:", filter);
+    return await this.collection.deleteMany(filter, {
       session: options.session,
     });
   }
 
-  // async softDeleteOne(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
-  //   const updateDoc: UpdateFilter<T> = {$set: { deletedAt: new Date() }};
+  async softDeleteOne(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
+    const updateDoc: UpdateFilter<T> = {
+      $set: { deletedAt: new Date() } as any,
+    };
 
-  //   return this.updateOne(filter, updateDoc as UpdateFilter<T>, options);
-  // }
+    return await this.updateOne(filter, updateDoc, options);
+  }
 
-  // async softDeleteMany(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
-  //   const updateDoc: UpdateFilter<T> = { $set: { deletedAt: new Date() } };
+  async softDeleteMany(filter: Filter<T>, options: DbOperationOptions<T> = {}) {
+    const updateDoc: UpdateFilter<T> = {
+      $set: { deletedAt: new Date() } as any,
+    };
 
-  //   return this.updateMany(filter, updateDoc as UpdateFilter<T>, options);
-  // }
+    return await this.updateMany(filter, updateDoc, options);
+  }
 
-  async startTransaction(): Promise<ClientSession> {
-    const session = this.client.startSession();
-    session.startTransaction();
+  async startTransaction(
+    sessionOptions?: ClientSessionOptions,
+    transactionOptions?: TransactionOptions
+  ): Promise<ClientSession> {
+    const session = this.client.startSession(sessionOptions);
+    session.startTransaction(transactionOptions);
     return session;
   }
 
-  async commitTransaction(session: ClientSession) {
+  async commitTransaction(session: ClientSession, options?: EndSessionOptions) {
     await session.commitTransaction();
-    session.endSession();
+    await session.endSession(options);
   }
 
-  async abortTransaction(session: ClientSession) {
+  async abortTransaction(session: ClientSession, options?: EndSessionOptions) {
     await session.abortTransaction();
-    session.endSession();
+    session.endSession(options);
+  }
+
+  async createIndex(
+    indexSpec: Parameters<Collection<T>["createIndex"]>[0],
+    options?: Parameters<Collection<T>["createIndex"]>[1]
+  ) {
+    this.log("createIndex:", indexSpec, options);
+    return await this.collection.createIndex(indexSpec, options);
   }
 }
